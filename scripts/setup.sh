@@ -10,7 +10,7 @@ source "${SCRIPT_DIR}/lib.sh"
 INSTALLER_KUSTOMIZE_OVERLAY=${INSTALLER_KUSTOMIZE_OVERLAY:-"development"}
 INSTALLER_NAMESPACE=${INSTALLER_NAMESPACE:-$(grep "^namespace:" "overlays/${INSTALLER_KUSTOMIZE_OVERLAY}/kustomization.yaml" | awk '{print $2}')}
 [[ -z "${INSTALLER_NAMESPACE}" ]] && echo "ERROR: Could not determine namespace from overlays/${INSTALLER_KUSTOMIZE_OVERLAY}/kustomization.yaml" && exit 1
-INSTALLER_VM_TEMPLATE=${INSTALLER_VM_TEMPLATE:-"osac.templates.ocp_virt_vm"}
+INSTALLER_VM_TEMPLATE=${INSTALLER_VM_TEMPLATE:-}
 # EXTRA_SERVICES=true enables all optional services (storage, ingress, virtualization, MCE)
 EXTRA_SERVICES=${EXTRA_SERVICES:-"false"}
 INGRESS_SERVICE=${INGRESS_SERVICE:-${EXTRA_SERVICES}}
@@ -213,8 +213,11 @@ wait_for_namespace_cleanup "${INSTALLER_NAMESPACE}"
 oc apply -k overlays/${INSTALLER_KUSTOMIZE_OVERLAY}
 
 # Wait for AAP bootstrap job to complete
-echo "Waiting for AAP bootstrap job to complete (this may take up to 20 minutes)..."
-wait_for_resource job/aap-bootstrap condition=complete 1200 ${INSTALLER_NAMESPACE}
+echo "Waiting for AAP bootstrap job to complete (this may take up to 40 minutes)..."
+wait_for_resource job/aap-bootstrap condition=complete 2400 ${INSTALLER_NAMESPACE}
+
+# Wait for Authorino to be ready (gRPC auth depends on it)
+wait_for_resource deployment/authorino condition=Available 300 ${INSTALLER_NAMESPACE}
 
 # Update project context
 oc project ${INSTALLER_NAMESPACE}

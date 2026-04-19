@@ -10,9 +10,7 @@ source "${SCRIPT_DIR}/lib.sh"
 INSTALLER_KUSTOMIZE_OVERLAY=${INSTALLER_KUSTOMIZE_OVERLAY:-"development"}
 INSTALLER_NAMESPACE=${INSTALLER_NAMESPACE:-$(grep "^namespace:" "overlays/${INSTALLER_KUSTOMIZE_OVERLAY}/kustomization.yaml" | awk '{print $2}')}
 [[ -z "${INSTALLER_NAMESPACE}" ]] && echo "ERROR: Could not determine namespace from overlays/${INSTALLER_KUSTOMIZE_OVERLAY}/kustomization.yaml" && exit 1
-INSTALLER_VM_TEMPLATE=${INSTALLER_VM_TEMPLATE:-"osac.templates.ocp_virt_vm"}
-EXTRA_SERVICES=${EXTRA_SERVICES:-"false"}
-VIRT_SERVICE=${VIRT_SERVICE:-${EXTRA_SERVICES}}
+INSTALLER_VM_TEMPLATE=${INSTALLER_VM_TEMPLATE:-}
 
 # Create hub access kubeconfig
 ./scripts/create-hub-access-kubeconfig.sh
@@ -22,9 +20,25 @@ FULFILLMENT_API_URL=https://$(oc get route -n ${INSTALLER_NAMESPACE} fulfillment
 osac login --insecure --private --token-script "oc create token -n ${INSTALLER_NAMESPACE} admin" --address ${FULFILLMENT_API_URL}
 osac create hub --kubeconfig=/tmp/kubeconfig.hub-access --id hub --namespace ${INSTALLER_NAMESPACE}
 
-# Wait for computeinstancetemplate to exist (VMaaS only)
-if [[ "${VIRT_SERVICE}" == "true" ]]; then
-    retry_until 1200 5 '[[ -n "$(osac get computeinstancetemplate -o json | jq -r --arg tpl ${INSTALLER_VM_TEMPLATE} '"'"'select(.id == $tpl)'"'"' 2> /dev/null)" ]]' || {
+if [[ -n "${INSTALLER_VM_TEMPLATE}" ]]; then
+    # Trigger a one-time publish-templates AAP job
+    AAP_ROUTE_HOST=$(oc get routes -n "${INSTALLER_NAMESPACE}" --no-headers osac-aap -o jsonpath='{.spec.host}')
+    AAP_URL="https://${AAP_ROUTE_HOST}"
+    AAP_TOKEN=$(oc get secret osac-aap-api-token -n "${INSTALLER_NAMESPACE}" -o jsonpath='{.data.token}' | base64 -d)
+    JT_ID=$(curl -kfsS -H "Authorization: Bearer ${AAP_TOKEN}" \
+        "${AAP_URL}/api/controller/v2/job_templates/?name=osac-publish-templates" | jq -er '.results[0].id // empty') || {
+        echo "Failed to find osac-publish-templates AAP job template"
+        exit 1
+    }
+    echo "Launching publish-templates AAP job (template ID: ${JT_ID})..."
+    curl -kfsS -X POST -H "Authorization: Bearer ${AAP_TOKEN}" -H "Content-Type: application/json" \
+        "${AAP_URL}/api/controller/v2/job_templates/${JT_ID}/launch/" >/dev/null || {
+        echo "Failed to launch osac-publish-templates AAP job"
+        exit 1
+    }
+
+    echo "Waiting for computeinstancetemplate ${INSTALLER_VM_TEMPLATE} to be published..."
+    retry_until 1200 5 '[[ -n "$(osac get computeinstancetemplate -o json | jq -r --arg tpl "$INSTALLER_VM_TEMPLATE" '"'"'select(.id == $tpl)'"'"' 2> /dev/null)" ]]' || {
         echo "Timed out waiting for computeinstancetemplate to exist"
         exit 1
     }
